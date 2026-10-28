@@ -15,7 +15,7 @@
 static const char *firstName = "susshruth";
 static const char *lastName = "pothula";
 static const char *studentId = "251ADB006";
-//Checking memory allocations in one place & exit if anythingfails.
+// Checking memory allocations in one place & exit if anything fails, so callers never need to check for NULL.
 static void *checkedRealloc(void *ptr, size_t size) {
     void *result = realloc(ptr, size);
     if (!result) {
@@ -33,6 +33,10 @@ static char *copyText(const char *text, size_t count) {
 }
 
 // Buffer grows as needed so the Large input files can be read too.
+// For large files the buffer doubles its capacity when it is full so reading or
+// appending n bytes costs O(n) in total with no repeated copying. The whole
+// input is read once into this block and the parser works on it directly.
+// lines arent copied out.
 typedef struct {
     char *data;
     size_t length;
@@ -129,8 +133,10 @@ static long long integerPower(long long base, long long exponent) {
     return result;
 }
 
-// Positions refer to the whole file & so errors are reported using absolute
-// character positions instead of positions relative to the current line.
+// // Positions 'pos' is an index into the whole file & not into the current line so
+// every \n & every comment character before it is already counted. The
+// 1-based position the assignment asks for is simply index + 1. lineEnd is the index of
+// the line's \n  so when the parser runs out of line, index + 1 is exactly the position we require.
 typedef struct {
     Value value;
     size_t start;   
@@ -214,8 +220,10 @@ static Value applyOperator(Parser *p, char op, Value left, Value right, size_t o
     return makeFloat(result);
 }
 
-// Integer powers require a nonnegative exponent. Floatingpoint powers use
-// pow()& nonfinite results are reported as errors.
+//A negative integer exponent is reported at the start of the exponent since
+// that operand is the one that's not allowed. If either side is a float pow()
+// is used & a NaN or infinite result is reported at the ** cause the
+// operands were valid and the operation produced the bad value.
 static Value applyPower(Parser *p, Value base, Value exponent, size_t opIndex, size_t exponentStart) {
     if (!base.isFloat && !exponent.isFloat) {
         if (exponent.whole < 0) {
@@ -231,10 +239,18 @@ static Value applyPower(Parser *p, Value base, Value exponent, size_t opIndex, s
     return makeFloat(result);
 }
 
-// Recursive descent with 1 function for each precedence level:
-// expr handles + and -, term handles * & / and power handles **.
-// Operators associate left to right except ** which associates right
-// to left. Parentheses allow expressions to be grouped differently.
+// Recursive descent with 1 function for each precedence level lowest first:
+//   expr := term { ('+' | '-') term }
+//   term := power { ('*' | '/') power }
+//   power := primary [ '**' power ]
+//   primary := NUMBER | '(' expr ')'
+// Precendence is right as each level asks the level below for its operands so
+// by the time parseExpr sees a '+' parseTerm has already combined every '*' and
+// '/' around it so 3 + 2 * 5 is 3 + (2 * 5). Parentheses go back to parseExpr
+// which is why they override everything.
+// Associativity is right cause parseExpr and parseTerm apply each operator as soon
+// as its right operand is read so + - * / group left to right. parsePower
+// combines its chain from the right so 2 ** 3 ** 2 is 2 ** (3 ** 2) = 512.
 static Value parseExpr(Parser *p);
 
 static int atPowerOperator(const Parser *p) {
@@ -272,7 +288,10 @@ static Value parseNumber(Parser *p) {
     return makeInt((long long)number);
 }
 
-// An operand starts with a number or '('. Anything else is a syntax error.
+// An operand starts with a number or '('. Anything else is a syntax error and is repored
+// right there : a second operator (7 + * 3), a unary minus (-5), an invalid character (2 + & 5)
+// or the end of the line (3 * then \n), which is the \n's position. A missing ')' is
+//found the same way as the parser expects ')' but reaches the end of the line.
 static Value parsePrimary(Parser *p) {
     skipSpaces(p);
     if (p->pos < p->lineEnd && isdigit((unsigned char)p->text[p->pos])) {
@@ -296,8 +315,10 @@ static Value parsePrimary(Parser *p) {
     return makeInt(0);
 }
 
-// Evaluate ** chains iteratively to avoid stack overflow on long expressions.
-// Combining the operands from right to left preserves right associativity.
+// The grammar rule for ** is recursive but one recursive call per ** can
+// overflow the stack on a very long line & lines have no length limit. So the
+// chain is read into a stack & combined from right to left with a loop which
+// gives the same right associative result and the same errors.
 static Value parsePower(Parser *p) {
     Value first = parsePrimary(p);
     if (hasFailed(p)) {
@@ -514,9 +535,9 @@ static int compareNames(const void *a, const void *b) {
     return strcmp(*(char *const *)a, *(char *const *)b);
 }
 
-// Every *.txt file directly inside folder & subfolders are not entered. Names are
-// collected before processing so that result files written into the same
-// folder cannot appear in the listing while its being read.
+// Every *.txt file directly inside the folder & subfolders are not entered. Names
+// are collected before processing so result files written into the same folder
+// cannot appear in the listing while it is being read.
 static int processFolder(const char *folder, const char *outDir) {
     DIR *dir = opendir(folder);
     if (!dir) {
@@ -558,6 +579,78 @@ static int processFolder(const char *folder, const char *outDir) {
         free(names[i]);
     }
     free(names);
+    return status;
+}
+
+static int usageError(const char *message, const char *detail) {
+    fprintf(stderr, "calc: %s%s\n", message, detail);
+    fprintf(stderr, "usage: calc [-d DIR | --dir DIR] [-o OUTDIR | --output-dir OUTDIR] [input.txt]\n");
+    return 1;
+}
+
+int main(int argc, char **argv) {
+    const char *folder = NULL;
+    const char *outDir = NULL;
+    const char *inputPath = NULL;
+
+    for (int i = 1; i < argc; i++) {
+        const char *arg = argv[i];
+        int isDir = strcmp(arg, "-d") == 0 || strcmp(arg, "--dir") == 0;
+        int isOut = strcmp(arg, "-o") == 0 || strcmp(arg, "--output-dir") == 0;
+        if (isDir || isOut) {
+            if (i + 1 >= argc) {
+                return usageError("missing folder name after ", arg);
+            }
+            if (isDir) {
+                folder = argv[++i];
+            } else {
+                outDir = argv[++i];
+            }
+        } else if (arg[0] == '-' && arg[1] != '\0') {
+            return usageError("unknown option ", arg);
+        } else if (inputPath) {
+            return usageError("only one input file can be given", "");
+        } else {
+            inputPath = arg;
+        }
+    }
+
+    if (!folder && !inputPath) {
+        return usageError("no input file or folder given", "");
+    }
+    if (folder && inputPath) {
+        return usageError("give either -d or an input file, not both", "");
+    }
+
+    //Checking the input before creating the output directory.
+    const char *source = folder ? folder : inputPath;
+    struct stat info;
+    if (stat(source, &info) != 0) {
+        fprintf(stderr, "calc: cannot open %s: %s\n", source, strerror(errno));
+        return 1;
+    }
+    if (folder ? !S_ISDIR(info.st_mode) : !S_ISREG(info.st_mode)) {
+        fprintf(stderr, "calc: %s is not a %s\n", source, folder ? "folder" : "file");
+        return 1;
+    }
+
+    // Use a default output folder based on the input filename or folder name.
+    // For files, remove the .txt extension first.
+    char *defaultDir = NULL;
+    if (!outDir) {
+        char *base = folder ? lastPart(folder) : inputBase(inputPath);
+        size_t size = strlen(base) + strlen(firstName) + strlen(studentId) + 3;
+        defaultDir = checkedRealloc(NULL, size);
+        snprintf(defaultDir, size, "%s_%s_%s", base, firstName, studentId);
+        free(base);
+        outDir = defaultDir;
+    }
+
+    int status = makeOutputDir(outDir);
+    if (status == 0) {
+        status = folder ? processFolder(folder, outDir) : processFile(inputPath, outDir);
+    }
+    free(defaultDir);
     return status;
 }
 
