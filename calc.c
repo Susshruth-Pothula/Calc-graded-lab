@@ -420,3 +420,144 @@ static void evaluateText(const char *text, size_t length, Buffer *out) {
     free(p.chain);
 }
 
+// Files and folders
+
+static int endsWithTxt(const char *name) {
+    size_t count = strlen(name);
+    return count >= 4 && strcmp(name + count - 4, ".txt") == 0;
+}
+
+// Gets the last part of a path ignoring any trailing slashes.
+// For example "labs/task1.txt" becomes "task1.txt". The caller basically frees it.
+static char *lastPart(const char *path) {
+    size_t end = strlen(path);
+    while (end > 1 && path[end - 1] == '/') {
+        end--;
+    }
+    size_t start = end;
+    while (start > 0 && path[start - 1] != '/') {
+        start--;
+    }
+    return copyText(path + start, end - start);
+}
+
+// "labs/task1.txt" becomes "task1"
+static char *inputBase(const char *path) {
+    char *name = lastPart(path);
+    if (endsWithTxt(name)) {
+        name[strlen(name) - 4] = '\0';
+    }
+    return name;
+}
+
+static char *joinPath(const char *folder, const char *name) {
+    size_t size = strlen(folder) + strlen(name) + 2;
+    char *path = checkedRealloc(NULL, size);
+    snprintf(path, size, "%s/%s", folder, name);
+    return path;
+}
+
+static int makeOutputDir(const char *path) {
+    if (mkdir(path, 0755) != 0 && errno != EEXIST) {
+        fprintf(stderr, "calc: cannot create folder %s: %s\n", path, strerror(errno));
+        return 1;
+    }
+    struct stat info;
+    if (stat(path, &info) != 0 || !S_ISDIR(info.st_mode)) {
+        fprintf(stderr, "calc: %s is not a folder\n", path);
+        return 1;
+    }
+    return 0;
+}
+
+// This writes the result to the required output filename.
+// Evaluation errors are output normally while file errors return 1.
+static int processFile(const char *inputPath, const char *outDir) {
+    Buffer input = { 0 };
+    if (readFile(inputPath, &input) != 0) {
+        fprintf(stderr, "calc: cannot read %s: %s\n", inputPath, strerror(errno));
+        free(input.data);
+        return 1;
+    }
+
+    Buffer output = { 0 };
+    evaluateText(input.data, input.length, &output);
+    free(input.data);
+
+    char *base = inputBase(inputPath);
+    size_t nameSize = strlen(base) + strlen(firstName) + strlen(lastName) + strlen(studentId) + 8;
+    char *fileName = checkedRealloc(NULL, nameSize);
+    snprintf(fileName, nameSize, "%s_%s_%s_%s.txt", base, firstName, lastName, studentId);
+    char *outPath = joinPath(outDir, fileName);
+
+    int status = 0;
+    FILE *file = fopen(outPath, "wb");
+    if (!file) {
+        fprintf(stderr, "calc: cannot write %s: %s\n", outPath, strerror(errno));
+        status = 1;
+    } else {
+        size_t written = output.length ? fwrite(output.data, 1, output.length, file) : 0;
+        if (fclose(file) != 0 || written != output.length) {
+            fprintf(stderr, "calc: cannot write %s\n", outPath);
+            status = 1;
+        }
+    }
+
+    free(outPath);
+    free(fileName);
+    free(base);
+    free(output.data);
+    return status;
+}
+
+static int compareNames(const void *a, const void *b) {
+    return strcmp(*(char *const *)a, *(char *const *)b);
+}
+
+// Every *.txt file directly inside folder & subfolders are not entered. Names are
+// collected before processing so that result files written into the same
+// folder cannot appear in the listing while its being read.
+static int processFolder(const char *folder, const char *outDir) {
+    DIR *dir = opendir(folder);
+    if (!dir) {
+        fprintf(stderr, "calc: cannot open folder %s: %s\n", folder, strerror(errno));
+        return 1;
+    }
+
+    char **names = NULL;
+    size_t count = 0;
+    size_t capacity = 0;
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (!endsWithTxt(entry->d_name)) {
+            continue;
+        }
+        char *path = joinPath(folder, entry->d_name);
+        struct stat info;
+        // This Skips anything that is not a regular file
+        if (stat(path, &info) == 0 && S_ISREG(info.st_mode)) {
+            if (count == capacity) {
+                capacity = capacity ? capacity * 2 : 16;
+                names = checkedRealloc(names, capacity * sizeof *names);
+            }
+            names[count++] = path;
+        } else {
+            free(path);
+        }
+    }
+    closedir(dir);
+
+    if (count > 1) {
+        qsort(names, count, sizeof *names, compareNames);
+    }
+    int status = 0;
+    for (size_t i = 0; i < count; i++) {
+        if (processFile(names[i], outDir) != 0) {
+            status = 1;
+        }
+        free(names[i]);
+    }
+    free(names);
+    return status;
+}
+
