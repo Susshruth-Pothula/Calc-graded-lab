@@ -2,6 +2,11 @@
 // https://github.com/Susshruth-Pothula/Calc-graded-lab
 // Compile with: gcc -O2 -Wall -Wextra -std=c17 -o calc calc.c -lm
 // Resources and Citations : 
+//https://www.geeksforgeeks.org/compiler-design/recursive-descent-parser/
+//https://www.geeksforgeeks.org/c/operator-precedence-and-associativity-in-c/
+//https://www.geeksforgeeks.org/c/dynamic-memory-allocation-in-c-using-malloc-calloc-free-and-realloc/
+//Used ChatGPT for questions on testing the program : 
+// https://chatgpt.com/share/6ae16cc2-a29c-83ed-9fc4-42c9b355b376
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -44,6 +49,7 @@ typedef struct {
 } Buffer;
 
 // This is to make room for extra bytes plus a terminating '\0'.
+//Used geeksforgeeks for memory allocation & realloc()
 static void bufferReserve(Buffer *buf, size_t extra) {
     if (buf->length + extra + 1 <= buf->capacity) {
         return;
@@ -238,7 +244,7 @@ static Value applyPower(Parser *p, Value base, Value exponent, size_t opIndex, s
     }
     return makeFloat(result);
 }
-
+//Used geeksforgeeks for recursive descent parser
 // Recursive descent with 1 function for each precedence level lowest first:
 //   expr := term { ('+' | '-') term }
 //   term := power { ('*' | '/') power }
