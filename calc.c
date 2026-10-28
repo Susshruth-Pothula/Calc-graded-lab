@@ -80,4 +80,52 @@ static int readFile(const char *path, Buffer *buf) {
     buf->data[buf->length] = '\0';
     return failed ? -1 : 0;
 }
+// Keep integers & floatingpoint values separate so integer division
+// stays as it is unless either operand's a float.
+
+typedef struct {
+    int isFloat;
+    long long whole; // valid when isFloat is 0
+    double real;     // valid when isFloat is 1
+} Value;
+
+static Value makeInt(long long number) {
+    Value v = { 0, number, 0.0 };
+    return v;
+}
+
+static Value makeFloat(double number) {
+    Value v = { 1, 0, number };
+    return v;
+}
+
+static double asDouble(Value v) {
+    return v.isFloat ? v.real : (double)v.whole;
+}
+
+// Use unsigned arithmetic for integer operations to avoid signed overflows undefined behaviour
+static long long wrapAdd(long long a, long long b) {
+    return (long long)((unsigned long long)a + (unsigned long long)b);
+}
+
+static long long wrapSubtract(long long a, long long b) {
+    return (long long)((unsigned long long)a - (unsigned long long)b);
+}
+
+static long long wrapMultiply(long long a, long long b) {
+    return (long long)((unsigned long long)a * (unsigned long long)b);
+}
+
+// Exponentiation by squaring : exponent 0 returns 1 including for 0 ** 0.
+static long long integerPower(long long base, long long exponent) {
+    long long result = 1;
+    while (exponent > 0) {
+        if (exponent & 1) {
+            result = wrapMultiply(result, base);
+        }
+        base = wrapMultiply(base, base);
+        exponent >>= 1;
+    }
+    return result;
+}
 
